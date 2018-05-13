@@ -19,11 +19,9 @@ from scipy import misc
 from model import ICNet_BN
 from tools import decode_labels
 
-import image_reader
-
 import train
 from train import INPUT_SIZE, IMG_MEAN, NUM_CLASSES
-
+from hyperparams import *
 import cv2
 '''
 INPUT_SIZE = '2049,1025'
@@ -43,6 +41,8 @@ num_classes = NUM_CLASSES
 snapshot_dir = './snapshots/'
 
 SAVE_DIR = './output/'
+
+not_restore_last = False
 
 def calculate_perfomance(sess, input, raw_output, shape, runs = 1000, batch_size = 1):
 
@@ -117,53 +117,29 @@ def load_img(img_path):
 
     filename = img_path.split('/')[-1]
     img = cv2.imread(img_path)
+    real_size = img.shape
     
     shape = INPUT_SIZE.split(',')
-    '''
-    h = img.shape[0]
-    w = img.shape[1]
-    blank_img = np.zeros((800,800,3),np.uint8)
-    if(h>800 or  w>800):
-        if(w > h):
-            new_w = 800
-            scale = w/new_w
-            new_h = h/scale
-            
-        else:
-            new_h = 800
-            scale = h / new_h
-            new_w = w/scale
-
-        img = cv2.resize(img, (int(new_w), int(new_h)))
-        blank_img[0:int(new_h), 0:int(new_w)] = img
-    else:
-        blank_img[0:h, 0:w] = img
-
-    img = blank_img
-    cv2.imshow("df", img)
-    '''
-
     img = cv2.resize(img, (int(shape[0]), int(shape[1])))
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     print('input image shape: ', img.shape)
 
-    return img, filename
+    return img, filename, real_size
 
 def preprocess(img):
     # Convert RGB to BGR
-    # img_r, img_g, img_b = tf.split(axis=2, num_or_size_splits=3, value=img
-
+    # img_r, img_g, img_b = tf.split(axis=2, num_or_size_splits=3, value=img)
     img = tf.cast(img, dtype=tf.float32)
     # Extract mean.
     img -= IMG_MEAN
     
-    img = tf.expand_dims(img, dim=0)
+    img = tf.expand_dims(img, dim=0)    
 
     return img
 
 def check_input(img):
-    
     ori_h, ori_w = img.get_shape().as_list()[1:3]
+
 
     if ori_h % 32 != 0 or ori_w % 32 != 0:
         new_h = (int(ori_h/32) + 1) * 32
@@ -175,14 +151,12 @@ def check_input(img):
         print('Image shape cannot divided by 32, padding to ({0}, {1})'.format(new_h, new_w))
     else:
         shape = [ori_h, ori_w]
-    
 
     return img, shape
 
 def load_from_checkpoint(shape, path):
     x = tf.placeholder(dtype = tf.float32, shape = shape)
     img_tf = preprocess(x)
-
     img_tf, n_shape = check_input(img_tf)
 
     # Create network.
@@ -194,22 +168,26 @@ def load_from_checkpoint(shape, path):
     output = tf.image.resize_bilinear(raw_output, tf.shape(img_tf)[1:3,])
     output = tf.argmax(output, dimension = 3)
     pred = tf.expand_dims(output, dim = 3)
+    pred = pred[0]
+    #pred = tf.py_func(decode_labels, [pred, 1, 2], tf.uint8)
 
     # Init tf Session
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
+
+    restore_var = tf.global_variables()
+
     sess = tf.Session(config = config)
     init = tf.global_variables_initializer()
 
     sess.run(init)
 
-    restore_var = tf.global_variables()
-    
     ckpt = tf.train.get_checkpoint_state(path)
     if ckpt and ckpt.model_checkpoint_path:
         loader = tf.train.Saver(var_list=restore_var)
         load_step = int(os.path.basename(ckpt.model_checkpoint_path).split('-')[1])
-        load(loader, sess, ckpt.model_checkpoint_path)
+        loader.restore(sess, ckpt.model_checkpoint_path)
+        print("Restored model parameters from {}".format(ckpt.model_checkpoint_path))
     
     #net.load('./model/icnet_cityscapes_trainval_90k_bnnomerge.npy', sess)
     return sess, pred, x
@@ -230,7 +208,7 @@ def load_from_pb(shape, path):
 
             config = tf.ConfigProto()
             config.graph_options.optimizer_options.do_common_subexpression_elimination = True
-            config.gpu_options.per_process_gpu_memory_fraction = 0.9
+            config.gpu_options.per_process_gpu_memory_fraction = 0.7
             config.allow_soft_placement = True
             config.log_device_placement = False
 
@@ -238,7 +216,26 @@ def load_from_pb(shape, path):
 
     return sess, pred, x
 
+
+def decode_label(mask, num_classes=2):
+
+    h, w, c = mask.shape
+
+    outputs = np.zeros((h, w, 3), dtype=np.uint8)
+    for i in range(1):
+      img = Image.new('RGB', (w, h))
+      pixels = img.load()
+      for j_, j in enumerate(mask[:, :, 0]):
+          
+          for k_, k in enumerate(j):
+
+              if int(k) < num_classes:
+                  pixels[k_,j_] = label_colours[int(k)]
+      outputs = np.array(img)
+    return outputs
+
 def main():
+    
     args = get_arguments()
     
     if args.img_path[-4] != '.':
@@ -249,7 +246,7 @@ def main():
 
     shape = INPUT_SIZE.split(',')
     shape = (int(shape[0]), int(shape[1]), 3)
-
+    
     if args.pb_file == '':
         sess, pred, x = load_from_checkpoint(shape, args.snapshots_dir)
     else:
@@ -261,8 +258,8 @@ def main():
 
     for path in files:
 
-        img, filename = load_img(path)
-        
+        img, filename, real_size = load_img(path)
+
         orig_img = copy.deepcopy(img)
 
         if args.pb_file != '':
@@ -272,10 +269,11 @@ def main():
         preds = sess.run(pred, feed_dict = {x: img})
 
         #print('time: ', time.time() - t)
-        #print('output shape: ', preds.shape)
+        print('output shape: ', preds.shape)
 
-        msk = decode_labels(preds, num_classes=num_classes)
-        im = msk[0]
+        msk = decode_label(preds)
+        im = msk
+        #im = preds
         #print('im', im.shape)
 
         if not os.path.exists(args.save_dir):
@@ -289,10 +287,8 @@ def main():
             print(im.shape, img.shape)
             im = cv2.addWeighted(im, 0.7, img, 0.7, -15)
             im[indx] = img[indx]
-
+        im = cv2.resize(im, (int(real_size[1]), int(real_size[0])))
         cv2.imwrite(args.save_dir + filename.replace('.jpg', '.png'), im)
-        cv2.imshow("sdf",im)
-        cv2.waitKey(0)
 
 if __name__ == '__main__':
     main()

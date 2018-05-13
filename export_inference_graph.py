@@ -46,11 +46,13 @@ def main(_):
         shape = INPUT_SIZE.split(',')
         shape = (int(shape[0]), int(shape[1]), 3)
 
-        x = tf.placeholder(name = 'input', dtype = tf.float32, shape = (None, shape[0], shape[1], 3))
+        x = tf.placeholder(name = 'input', dtype = tf.float32, shape = (1,shape[0], shape[1], 3))
 
         img_tf = tf.cast(x, dtype=tf.float32)
         # Extract mean.
         img_tf -= IMG_MEAN
+
+        #img_tf = tf.expand_dims(img_tf, dim=0)    
 
         print(img_tf)
         # Create network.
@@ -59,7 +61,24 @@ def main(_):
         raw_output = net.layers['conv6_cls']
         output = tf.image.resize_bilinear(raw_output, tf.shape(img_tf)[1:3,], name = 'raw_output')
         output = tf.argmax(output, dimension = 3)
-        pred = tf.expand_dims(output, dim = 3, name = 'indices')
+        pred = tf.expand_dims(output, dim = 3)
+        pred = tf.squeeze(pred, 0)
+        pred = tf.cast(pred, dtype=tf.int32, name = 'indices')
+
+        '''
+        pred = tf.squeeze(pred, 2)
+        cond = tf.equal(pred, tf.constant(1))
+        indx = tf.where((cond))
+        #values = tf.constant(200, shape=tf.shape(indx)) 
+        delta = tf.SparseTensor(indx, tf.constant(200), tf.shape(pred))
+        result = pred + tf.sparse_tensor_to_dense(delta)
+
+        pred = tf.expand_dims(output, dim = 2, name = 'indices')
+        '''
+
+
+
+        #pred = tf.py_func(decode_labels, [pred, 1, 2], tf.uint8)
 
         # Adding additional params to graph. It is necessary also to point them as outputs in graph freeze conversation, otherwise they will be cuted
         tf.constant(label_colours, name = 'label_colours')
