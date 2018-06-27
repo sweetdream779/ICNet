@@ -23,38 +23,10 @@ import image_reader
 from hyperparams_lanes import *
 
 import cv2
-cv2.namedWindow('subframe',cv2.WINDOW_NORMAL)
 '''
 INPUT_SIZE = '2049,1025'
 NUM_CLASSES = 19
 '''
-
-def decode_labels(mask, num_images=1, num_classes=21):
-    """Decode batch of segmentation masks.
-    
-    Args:
-      mask: result of inference after taking argmax.
-      num_images: number of images to decode from the batch.
-      num_classes: number of classes to predict (including background).
-    
-    Returns:
-      A batch with num_images RGB images of the same size as the input. 
-    """
-    n, h, w, c = mask.shape
-
-    assert(n >= num_images), 'Batch size %d should be greater or equal than number of images to save %d.' % (n, num_images)
-    outputs = np.zeros((num_images, h, w, 3), dtype=np.uint8)
-    for i in range(num_images):
-      img = Image.new('RGB', (len(mask[i, 0]), len(mask[i])))
-      pixels = img.load()
-      for j_, j in enumerate(mask[i, :, :, 0]):
-          
-          for k_, k in enumerate(j):
-
-              if k < num_classes:
-                  pixels[k_,j_] = label_colours[k]
-      outputs[i] = np.array(img)
-    return outputs
 
 def GetAllFilesListRecusive(path, extensions):
     files_all = []
@@ -325,25 +297,57 @@ def slice_frame_with_window(frame, output_shape = None, objects = [], step = 0.1
 
     return subframes, coords, orig_subframes, orig_shapes
 
-def fill_map(mask, values, x0, y0):
-    for j_, j in enumerate(mask[:, :, 0]):
+def decode_labels(mask, num_images=1, num_classes=21):
+    """Decode batch of segmentation masks.
+    
+    Args:
+      mask: result of inference after taking argmax.
+      num_images: number of images to decode from the batch.
+      num_classes: number of classes to predict (including background).
+    
+    Returns:
+      A batch with num_images RGB images of the same size as the input. 
+    """
+    n, h, w, c = mask.shape
+
+    assert(n >= num_images), 'Batch size %d should be greater or equal than number of images to save %d.' % (n, num_images)
+    outputs = np.zeros((num_images, h, w, 3), dtype=np.uint8)
+    for i in range(num_images):
+      img = Image.new('RGB', (len(mask[i, 0]), len(mask[i])))
+      pixels = img.load()
+      for j_, j in enumerate(mask[i, :, :, 0]):
+          
           for k_, k in enumerate(j):
-            if k < num_classes:
-                values[j_ + y0, k_+ x0, int(k)] += 1
+
+              if k < num_classes:
+                  pixels[k_,j_] = label_colours[k]
+      outputs[i] = np.array(img)
+    print("decoded labels")
+    return outputs
+
+def fill_map(mask, values, x0, y0, num_classes=3):
+    for j_, j in enumerate(mask[:, :]):
+          for k_, k in enumerate(j):
+            for i in range(num_classes):
+                if k[0] == label_colours[i][0] and k[1] == label_colours[i][1] and k[2] == label_colours[i][2]:
+                    values[j_ + y0, k_+ x0, i] += 1
+                    break
+    print("filled values array")
     return values
 
 def decode(values):
     img = Image.new('RGB', (len(values[0]), len(values)))
     pixels = img.load()
-    for j_,j in enumerate(ar[:,:]):
+    for j_,j in enumerate(values[:,:]):
         for k_,k in enumerate(j):
             clas = np.argmax(k)
             pixels[k_,j_] = label_colours[clas]
+    print("decoded")
     return np.array(img)
 
 def getWeightedImage(image, mask):
     indx = (mask == [0, 0, 0])
-    mask = cv2.addWeighted(mask, 0.7, image, 0.7, -15)
+    mask = cv2.addWeighted(mask, 0.6, image, 0.6, -15)
     mask[indx] = image[indx]
     return mask
 
@@ -381,16 +385,16 @@ def main():
         #if args.pb_file != '':
         #    img = np.expand_dims(img, axis = 0)
         orig_img = cv2.imread(path)
-        #orig_img_resized = cv2.resize(orig_img, None, fx=0.2, fy=0.2)
-        height, width, _ = orig_img.shape
+        orig_img_resized = cv2.resize(orig_img, None, fx=0.5, fy=0.5)
+        height, width, _ = orig_img_resized.shape
 
         values = np.zeros((height, width, NUM_CLASSES), dtype=np.uint8)
 
         t = time.time()
 
-        frames, coords, orig_subframes, orig_shapes = slice_frame_with_window(orig_img, step = 0.05, output_shape = [800, 800], init_position = [0,1500],
+        frames, coords, orig_subframes, orig_shapes = slice_frame_with_window(orig_img_resized, step = 0.05, output_shape = [800, 800], init_position = [0,750],
                                                                 win_size = 0.15, aspect_ratio = [0.4, 2.0], 
-                                                                min_size = [400, 400], y_bound = 3300)
+                                                                min_size = [250, 250], y_bound = 1650)
 
         for i in range(len(frames)):
             frame = frames[i]
@@ -405,36 +409,22 @@ def main():
 
             msk = decode_labels(preds, num_classes=num_classes)
             im = msk[0]                       
-            im = cv2.resize(im, (w,h))
+            im = cv2.resize(im, (w,h), 0, 0, interpolation = cv2.INTER_NEAREST)
+            ########
+            #res = getWeightedImage(frame_copy, im)
+            #filename_ = filename[ : filename.rfind('.')] + '_'+str(i)+'.png'
+            #cv2.imwrite(args.save_dir + '/' + filename_, res)
+            ########
             values = fill_map(im, values, x0,y0)
-
-            res = getWeightedImage(frame_copy, im)
-            filename_ = filename[ : filename.rfind('.')] + '_'+str(i)+'.png'
-            cv2.imwrite(args.save_dir + '/' + filename_, res)
             
         #print('im', im.shape)
 
         print('time: ', time.time() - t)
 
         result_mask = decode(values)
-        result = getWeightedImage(orig_img, result_mask)
-        filename_ = filename[ : filename.rfind('.')] + '_total.png'
+        result = getWeightedImage(orig_img_resized, result_mask)
+        filename_ = filename[ : filename.rfind('.')] + '_slidewind.jpg'
         cv2.imwrite(args.save_dir + '/' + filename_, result)
-
-        '''
-        im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-        img = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
-
-        if args.weighted:
-            indx = (im == [0, 0, 0])
-            print(im.shape, img.shape)
-            im = cv2.addWeighted(im, 0.7, img, 0.7, -15)
-            im[indx] = img[indx]
-
-        cv2.imwrite(args.save_dir + filename.replace('.jpg', '.png'), im)
-        cv2.imshow("sdf",im)
-        cv2.waitKey(0)
-        '''
 
 if __name__ == '__main__':
     main()
